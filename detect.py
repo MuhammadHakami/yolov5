@@ -4,12 +4,28 @@ import torch.backends.cudnn as cudnn
 
 from utils.datasets import *
 from utils.utils import *
+import os
+import glob
 
+def clean_unlabeled():
+    for filePath in glob.glob('../data/double_parking/labels/unlabeled/*.txt'):
+        try:
+            os.remove(filePath)
+        except:
+            print("Error while deleting file : ", filePath)
+    try:
+        os.remove('../data/double_parking/unlabeled.txt')
+    except:
+        print("Error while deleting file : ", '../data/double_parking/unlabeled.txt')
 
 def detect(save_img=False):
-    out, source, weights, view_img, save_txt, imgsz = \
-        opt.output, opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
+    out, source, weights, view_img, save_txt, imgsz, unlabeled = \
+        opt.output, opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, opt.unlabeled
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
+
+    if unlabeled:
+        clean_unlabeled()
+        print("Cleaned unlabeled")
 
     # Initialize
     device = torch_utils.select_device(opt.device)
@@ -65,13 +81,13 @@ def detect(save_img=False):
 
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres,
-                                   fast=True, classes=opt.classes, agnostic=opt.agnostic_nms)
+                                   classes=opt.classes, agnostic=opt.agnostic_nms)
         t2 = torch_utils.time_synchronized()
 
         # Apply Classifier
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
-
+        
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -97,6 +113,13 @@ def detect(save_img=False):
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         with open(save_path[:save_path.rfind('.')] + '.txt', 'a') as file:
                             file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
+
+                    if float(conf)>unlabeled:
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                        with open("../data/double_parking/labels/unlabeled/"+save_path[:save_path.rfind('.')].split('/')[-1] + '.txt', 'a') as file:
+                            file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
+                        with open("../data/double_parking/unlabeled" + '.txt', 'a') as file:
+                            file.write('./images/unlabeled/{name}'.format(name=save_path[:save_path.rfind('.')].split('/')[-1])+'.jpg'+'\n')  # label format
 
                     if save_img or view_img:  # Add bbox to image
                         label = '%s %.2f' % (names[int(cls)], conf)
@@ -127,7 +150,7 @@ def detect(save_img=False):
                         vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
                     vid_writer.write(im0)
 
-    if save_txt or save_img:
+    if save_txt or save_img or unlabeled:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)
@@ -150,6 +173,7 @@ if __name__ == '__main__':
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
+    parser.add_argument('--unlabeled', type=float, default=0, help='predict unlabeled above τ to results in data/.../labels/unlabeled/*.txt')
     opt = parser.parse_args()
     opt.img_size = check_img_size(opt.img_size)
     print(opt)

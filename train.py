@@ -11,6 +11,7 @@ import test  # import test.py to get mAP after each epoch
 from models.yolo import Model
 from utils.datasets import *
 from utils.utils import *
+from itertools import zip_longest
 
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
@@ -69,6 +70,7 @@ def train(hyp):
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # model dict
     train_path = data_dict['train']
     test_path = data_dict['val']
+
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
 
     # Remove previous results
@@ -184,6 +186,29 @@ def train(hyp):
                                              pin_memory=True,
                                              collate_fn=dataset.collate_fn)
 
+    ######################################################## Unlabeled ##################################################################
+    if opt.unlabeled:
+        unlabeled_path = data_dict['unlabeled']
+        unlabeled_dataset = LoadImagesAndLabels(unlabeled_path, imgsz, batch_size,
+                                    augment=True,
+                                    hyp=hyp,  # augmentation hyperparameters
+                                    rect=opt.rect,  # rectangular training
+                                    cache_images=opt.cache_images,
+                                    single_cls=opt.single_cls)
+        mlc = np.concatenate(unlabeled_dataset.labels, 0)[:, 0].max()  # max label class
+        assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Correct your labels or your model.' % (mlc, nc, opt.cfg)
+
+        # Dataloader
+        unlabeled_batch_size = min(batch_size, len(unlabeled_dataset))
+        nw = min([os.cpu_count(), unlabeled_batch_size if unlabeled_batch_size > 1 else 0, 8])  # number of workers
+        unlabeled_loader = torch.utils.data.DataLoader(unlabeled_dataset,
+                                                batch_size=unlabeled_batch_size,
+                                                num_workers=nw,
+                                                shuffle=not opt.rect,  # Shuffle=True unless rectangular training is used
+                                                pin_memory=True,
+                                                collate_fn=unlabeled_dataset.collate_fn)
+
+
     # Model parameters
     hyp['cls'] *= nc / 80.  # scale coco-tuned hyp['cls'] to current dataset
     model.nc = nc  # attach number of classes to model
@@ -230,9 +255,16 @@ def train(hyp):
         mloss = torch.zeros(4, device=device)  # mean losses
         print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size'))
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
+
+        if opt.unlabeled:
+            unbn=len(unlabeled_loader)
+            utqdm=tqdm(total = unbn)
+            unlabeled_pbar= iter(enumerate(unlabeled_loader))
+
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+
             ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
+            
 
             # Burn-in
             if ni <= n_burn:
@@ -246,12 +278,18 @@ def train(hyp):
                         x['momentum'] = np.interp(ni, xi, [0.9, hyp['momentum']])
 
             # Multi-scale
-            if opt.multi_scale:
-                sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
-                sf = sz / max(imgs.shape[2:])  # scale factor
-                if sf != 1:
-                    ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
-                    imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
+            def multi_scale(imgs):
+                # image scaling
+                imgs = imgs.to(device).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
+                if opt.multi_scale:
+                    sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
+                    sf = sz / max(imgs.shape[2:])  # scale factor
+                    if sf != 1:
+                        ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
+                        imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
+                return imgs
+                        
+            imgs = multi_scale(imgs)
 
             # Forward
             pred = model(imgs)
@@ -261,6 +299,20 @@ def train(hyp):
             if not torch.isfinite(loss):
                 print('WARNING: non-finite loss, ending training ', loss_items)
                 return results
+
+            if opt.unlabeled and i<unbn:
+                u, (u_imgs, u_targets, u_paths, _) = next(unlabeled_pbar)
+                u_imgs = multi_scale(u_imgs)
+                u_pred = model(imgs)
+
+                u_loss, u_loss_items = compute_loss(u_pred, u_targets.to(device), model)
+                if not torch.isfinite(loss):
+                    print('WARNING: non-finite loss, ending training ', u_loss_items)
+                    return results
+                print(" loss: ", float(loss), " ||| u_loss: ", float(u_loss), " ||| loss + u_loss*2: ", float(loss+(opt.unlabeled*u_loss)))
+                print(" loss: ", u_loss_items.tolist())
+                loss = loss+(opt.unlabeled*u_loss)
+                loss_items = loss_items+(opt.unlabeled*u_loss_items)
 
             # Backward
             if mixed_precision:
@@ -291,6 +343,8 @@ def train(hyp):
                     # tb_writer.add_graph(model, imgs)  # add model to tensorboard
 
             # end batch ------------------------------------------------------------------------------------------------
+            if opt.unlabeled and i<unbn:
+                utqdm.update(1)
 
         # Scheduler
         scheduler.step()
@@ -386,6 +440,7 @@ if __name__ == '__main__':
     parser.add_argument('--adam', action='store_true', help='use adam optimizer')
     parser.add_argument('--multi-scale', action='store_true', help='vary img-size +/- 50%')
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
+    parser.add_argument('--unlabeled', type=float, default=0, help="λ weight added for unlabeled's loss in STAC, recommeneded λ ∈ [1,2]")
     opt = parser.parse_args()
     opt.weights = last if opt.resume else opt.weights
     opt.cfg = check_file(opt.cfg)  # check file
