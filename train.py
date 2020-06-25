@@ -12,6 +12,7 @@ from models.yolo import Model
 from utils.datasets import *
 from utils.utils import *
 from itertools import zip_longest
+import numpy as np
 
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
@@ -243,6 +244,14 @@ def train(hyp):
     print('Using %g dataloader workers' % nw)
     print('Starting training for %g epochs...' % epochs)
     # torch.autograd.set_detect_anomaly(True)
+
+    ###################################################### unlabel randomizer ############################################################
+    # unlabeled_rnd_index=np.zeros(nb-1)
+    if opt.unlabeled:
+        unbn=len(unlabeled_loader)
+        # unlabeled_rnd_index[:unbn]=1
+        # print(unlabeled_rnd_index.shape)
+        
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -251,35 +260,39 @@ def train(hyp):
             w = model.class_weights.cpu().numpy() * (1 - maps) ** 2  # class weights
             image_weights = labels_to_image_weights(dataset.labels, nc=nc, class_weights=w)
             dataset.indices = random.choices(range(dataset.n), weights=image_weights, k=dataset.n)  # rand weighted idx
+            if opt.unlabeled:
+                unlabeled_image_weights = labels_to_image_weights(unlabeled_dataset.labels, nc=nc, class_weights=w)
+                unlabeled_dataset.indices = random.choices(range(unlabeled_dataset.n), weights=unlabeled_image_weights, k=dataset.n)  # rand weighted idx
+
 
         mloss = torch.zeros(4, device=device)  # mean losses
         print(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'GIoU', 'obj', 'cls', 'total', 'targets', 'img_size'))
-        pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
+        pbar = tqdm(enumerate(dataloader), total=len(dataloader))  # progress bar
+        labeled_unlabeled_pbar=[('l', nb, batch_size, pbar)]
 
         if opt.unlabeled:
-            unbn=len(unlabeled_loader)
-            utqdm=tqdm(total = unbn)
-            unlabeled_pbar= iter(enumerate(unlabeled_loader))
+            unlabeled_pbar= tqdm(enumerate(unlabeled_loader), total=unbn)
+            labeled_batch_size=batch_size
+            labeled_unlabeled_pbar.append(('unl', unbn, unlabeled_batch_size, unlabeled_pbar))
+        
+        for sign, nb, batch_size, pb in labeled_unlabeled_pbar:
+            n_burn= max(3 * nb, 1e3)
+            for i, (imgs, targets, paths, _) in pb:  # batch -------------------------------------------------------------
 
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+                ni = i + nb * epoch  # number integrated batches (since train start)
 
-            ni = i + nb * epoch  # number integrated batches (since train start)
-            
+                # Burn-in
+                if ni <= n_burn:
+                    xi = [0, n_burn]  # x interp
+                    # model.gr = np.interp(ni, xi, [0.0, 1.0])  # giou loss ratio (obj_loss = 1.0 or giou)
+                    accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
+                    for j, x in enumerate(optimizer.param_groups):
+                        # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                        x['lr'] = np.interp(ni, xi, [0.1 if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
+                        if 'momentum' in x:
+                            x['momentum'] = np.interp(ni, xi, [0.9, hyp['momentum']])
 
-            # Burn-in
-            if ni <= n_burn:
-                xi = [0, n_burn]  # x interp
-                # model.gr = np.interp(ni, xi, [0.0, 1.0])  # giou loss ratio (obj_loss = 1.0 or giou)
-                accumulate = max(1, np.interp(ni, xi, [1, nbs / batch_size]).round())
-                for j, x in enumerate(optimizer.param_groups):
-                    # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
-                    x['lr'] = np.interp(ni, xi, [0.1 if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
-                    if 'momentum' in x:
-                        x['momentum'] = np.interp(ni, xi, [0.9, hyp['momentum']])
-
-            # Multi-scale
-            def multi_scale(imgs):
-                # image scaling
+                # Multi-scale
                 imgs = imgs.to(device).float() / 255.0  # uint8 to float32, 0 - 255 to 0.0 - 1.0
                 if opt.multi_scale:
                     sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
@@ -287,65 +300,52 @@ def train(hyp):
                     if sf != 1:
                         ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                         imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
-                return imgs
-                        
-            imgs = multi_scale(imgs)
 
-            # Forward
-            pred = model(imgs)
+                # Forward
+                pred = model(imgs)
 
-            # Loss
-            loss, loss_items = compute_loss(pred, targets.to(device), model)
-            if not torch.isfinite(loss):
-                print('WARNING: non-finite loss, ending training ', loss_items)
-                return results
-
-            if opt.unlabeled and i<unbn:
-                u, (u_imgs, u_targets, u_paths, _) = next(unlabeled_pbar)
-                u_imgs = multi_scale(u_imgs)
-                u_pred = model(imgs)
-
-                u_loss, u_loss_items = compute_loss(u_pred, u_targets.to(device), model)
+                # Loss
+                loss, loss_items = compute_loss(pred, targets.to(device), model)
                 if not torch.isfinite(loss):
-                    print('WARNING: non-finite loss, ending training ', u_loss_items)
+                    print('WARNING: non-finite loss, ending training ', loss_items)
                     return results
-                print(" loss: ", float(loss), " ||| u_loss: ", float(u_loss), " ||| loss + u_loss*2: ", float(loss+(opt.unlabeled*u_loss)))
-                print(" loss: ", u_loss_items.tolist())
-                loss = loss+(opt.unlabeled*u_loss)
-                loss_items = loss_items+(opt.unlabeled*u_loss_items)
 
-            # Backward
-            if mixed_precision:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
+                if opt.unlabeled and sign=="unl":
+                    loss*=opt.unlabeled
+                    mloss_pr= (mloss * i + loss_items) / (i + 1)
+                    loss_items*=opt.unlabeled
 
-            # Optimize
-            if ni % accumulate == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-                ema.update(model)
+                # Backward
+                if mixed_precision:
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    loss.backward()
 
-            # Print
-            mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-            mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
-            s = ('%10s' * 2 + '%10.4g' * 6) % (
-                '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
-            pbar.set_description(s)
+                # Optimize
+                if ni % accumulate == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    ema.update(model)
 
-            # Plot
-            if ni < 3:
-                f = 'train_batch%g.jpg' % i  # filename
-                res = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
-                if tb_writer:
-                    tb_writer.add_image(f, res, dataformats='HWC', global_step=epoch)
-                    # tb_writer.add_graph(model, imgs)  # add model to tensorboard
+                # Print
+                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
+                s = ('%10s' * 2 + '%10.4g' * 6) % (
+                    '%g/%g' % (epoch, epochs - 1), mem, *(mloss if sign=='l' else mloss_pr), targets.shape[0], imgs.shape[-1])
+                pb.set_description(s)
 
-            # end batch ------------------------------------------------------------------------------------------------
-            if opt.unlabeled and i<unbn:
-                utqdm.update(1)
+                # Plot
+                if ni < 3 and sign=="l":
+                    f = 'train_batch%g.jpg' % i  # filename
+                    res = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
+                    if tb_writer:
+                        tb_writer.add_image(f, res, dataformats='HWC', global_step=epoch)
+                        # tb_writer.add_graph(model, imgs)  # add model to tensorboard
 
+                # end batch ------------------------------------------------------------------------------------------------
+        if opt.unlabeled:
+            batch_size= labeled_batch_size+unlabeled_batch_size
         # Scheduler
         scheduler.step()
 
