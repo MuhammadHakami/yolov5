@@ -11,7 +11,7 @@ import test  # import test.py to get mAP after each epoch
 from models.yolo import Model
 from utils.datasets import *
 from utils.utils import *
-from itertools import zip_longest
+
 import numpy as np
 
 mixed_precision = True
@@ -192,7 +192,10 @@ def train(hyp):
         unlabeled_path = data_dict['unlabeled']
         unlabeled_dataset = LoadImagesAndLabels(unlabeled_path, imgsz, batch_size,
                                     augment=True,
+                                    cutouts=1,
+                                    heavy_colors=[0.5, 0.0, 0.3],
                                     hyp=hyp,  # augmentation hyperparameters
+                                    rotation=30.0,
                                     rect=opt.rect,  # rectangular training
                                     cache_images=opt.cache_images,
                                     single_cls=opt.single_cls)
@@ -310,10 +313,11 @@ def train(hyp):
                     print('WARNING: non-finite loss, ending training ', loss_items)
                     return results
 
-                if opt.unlabeled and sign=="unl":
+                if sign=="unl":
                     loss*=opt.unlabeled
-                    mloss_pr= (mloss * i + loss_items) / (i + 1)
-                    loss_items*=opt.unlabeled
+                    # mloss_pr= (mloss * i + loss_items) / (i + 1)
+                    # loss_items*=opt.unlabeled
+                    # *(mloss if sign=='l' else mloss_pr)
 
                 # Backward
                 if mixed_precision:
@@ -332,12 +336,12 @@ def train(hyp):
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
-                    '%g/%g' % (epoch, epochs - 1), mem, *(mloss if sign=='l' else mloss_pr), targets.shape[0], imgs.shape[-1])
+                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
                 pb.set_description(s)
 
                 # Plot
-                if ni < 3 and sign=="l":
-                    f = 'train_batch%g.jpg' % i  # filename
+                if ni < 3:
+                    f = 'train_batch{i}_{sign}.jpg'.format(i= i, sign= sign)  # filename
                     res = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
                     if tb_writer:
                         tb_writer.add_image(f, res, dataformats='HWC', global_step=epoch)
@@ -346,6 +350,7 @@ def train(hyp):
                 # end batch ------------------------------------------------------------------------------------------------
         if opt.unlabeled:
             batch_size= labeled_batch_size+unlabeled_batch_size
+            
         # Scheduler
         scheduler.step()
 

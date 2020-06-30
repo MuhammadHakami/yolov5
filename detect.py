@@ -7,16 +7,16 @@ from utils.utils import *
 import os
 import glob
 
-def clean_unlabeled():
-    for filePath in glob.glob('../data/double_parking/labels/unlabeled/*.txt'):
+def clean_unlabeled(s):
+    for filePath in glob.glob('{source}/labels/unlabeled/*.txt'.format(source=s.split("/images")[0])):
         try:
             os.remove(filePath)
         except:
             print("Error while deleting file : ", filePath)
     try:
-        os.remove('../data/double_parking/unlabeled.txt')
+        os.remove('{source}/unlabeled.txt'.format(source=s.split("/images")[0]))
     except:
-        print("Error while deleting file : ", '../data/double_parking/unlabeled.txt')
+        print("Error while deleting file : ", '{source}/unlabeled.txt'.format(source=s.split("/images")[0]))
 
 def detect(save_img=False):
     out, source, weights, view_img, save_txt, imgsz, unlabeled = \
@@ -24,7 +24,7 @@ def detect(save_img=False):
     webcam = source == '0' or source.startswith('rtsp') or source.startswith('http') or source.endswith('.txt')
 
     if unlabeled:
-        clean_unlabeled()
+        clean_unlabeled(source)
         print("Cleaned unlabeled")
 
     # Initialize
@@ -114,11 +114,11 @@ def detect(save_img=False):
                         with open(save_path[:save_path.rfind('.')] + '.txt', 'a') as file:
                             file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
 
-                    if float(conf)>unlabeled:
+                    if float(conf)>unlabeled and unlabeled!=0:
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        with open("../data/double_parking/labels/unlabeled/"+save_path[:save_path.rfind('.')].split('/')[-1] + '.txt', 'a') as file:
+                        with open("{source}/labels/unlabeled/".format(source=source.split("/images")[0])+save_path[:save_path.rfind('.')].split('/')[-1] + '.txt', 'a') as file:
                             file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
-                        with open("../data/double_parking/unlabeled" + '.txt', 'a') as file:
+                        with open("{source}/unlabeled".format(source=source.split("/images")[0]) + '.txt', 'a') as file:
                             file.write('./images/unlabeled/{name}'.format(name=save_path[:save_path.rfind('.')].split('/')[-1])+'.jpg'+'\n')  # label format
 
                     if save_img or view_img:  # Add bbox to image

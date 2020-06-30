@@ -258,7 +258,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=416, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, pad=0.0):
+                 cache_images=False, single_cls=False, pad=0.0, cutouts=0, heavy_colors=[0, 0, 0], rotation=0):
         try:
             path = str(Path(path))  # os-agnostic
             parent = str(Path(path).parent) + os.sep
@@ -284,9 +284,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
+        if rotation:
+            self.rotation=rotation
+        else:
+            self.rotation=hyp['degrees']
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+        self.cutouts = cutouts
+        self.heavy_colors=heavy_colors
 
         # Define labels
         self.label_files = [x.replace('images', 'labels').replace(os.path.splitext(x)[-1], '.txt')
@@ -470,17 +476,17 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # Augment imagespace
             if not self.mosaic:
                 img, labels = random_affine(img, labels,
-                                            degrees=hyp['degrees'],
+                                            degrees=self.rotation,
                                             translate=hyp['translate'],
                                             scale=hyp['scale'],
                                             shear=hyp['shear'])
 
             # Augment colorspace
-            augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+            augment_hsv(img, hgain=hyp['hsv_h']+self.heavy_colors[0], sgain=hyp['hsv_s']+self.heavy_colors[1], vgain=hyp['hsv_v']+self.heavy_colors[2])
 
             # Apply cutouts
-            # if random.random() < 0.9:
-            #     labels = cutout(img, labels)
+            if random.random() < self.cutouts:
+                labels = cutout(img, labels)
 
         nL = len(labels)  # number of labels
         if nL:
@@ -493,7 +499,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         if self.augment:
             # random left-right flip
-            lr_flip = True
+            lr_flip = False
             if lr_flip and random.random() < 0.5:
                 img = np.fliplr(img)
                 if nL:
@@ -609,7 +615,7 @@ def load_mosaic(self, index):
     # Augment
     # img4 = img4[s // 2: int(s * 1.5), s // 2:int(s * 1.5)]  # center crop (WARNING, requires box pruning)
     img4, labels4 = random_affine(img4, labels4,
-                                  degrees=self.hyp['degrees'],
+                                  degrees=self.rotation,
                                   translate=self.hyp['translate'],
                                   scale=self.hyp['scale'],
                                   shear=self.hyp['shear'],
