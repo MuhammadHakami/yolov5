@@ -51,6 +51,7 @@ class LoadImages:  # for inference
             files = [path]
 
         images = [x for x in files if os.path.splitext(x)[-1].lower() in img_formats]
+        images = sorted(images, key=lambda x: int(x.split("/")[-1].split(".")[0]))
         videos = [x for x in files if os.path.splitext(x)[-1].lower() in vid_formats]
         nI, nV = len(images), len(videos)
 
@@ -154,7 +155,7 @@ class LoadWebcam:  # for inference
         # Read frame
         if self.pipe == 0:  # local camera
             ret_val, img0 = self.cap.read()
-            img0 = cv2.flip(img0, 1)  # flip left-right
+            # img0 = cv2.flip(img0, 1)  # flip left-right
         else:  # IP camera
             n = 0
             while True:

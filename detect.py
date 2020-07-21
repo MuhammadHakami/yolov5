@@ -59,6 +59,8 @@ def detect(save_img=False):
     else:
         save_img = True
         dataset = LoadImages(source, img_size=imgsz)
+        # if source[-4]!='.':
+        #     dataset.files=sorted(dataset.files, key=lambda x: int(x.split("/")[-1].split(".")[0]))
 
     # Get names and colors
     names = model.names if hasattr(model, 'names') else model.modules.names
@@ -87,7 +89,6 @@ def detect(save_img=False):
         # Apply Classifier
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
-        
         # Process detections
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
@@ -98,6 +99,7 @@ def detect(save_img=False):
             save_path = str(Path(out) / Path(p).name)
             s += '%gx%g ' % img.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  #  normalization gain whwh
+            un_pass=False if unlabeled!=0 else True
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
@@ -109,21 +111,24 @@ def detect(save_img=False):
 
                 # Write results
                 for *xyxy, conf, cls in det:
+                    un_pass=False if unlabeled!=0 else True
+                    unlabeled_save=float(conf)>unlabeled and unlabeled!=0
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         with open(save_path[:save_path.rfind('.')] + '.txt', 'a') as file:
                             file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
 
-                    if float(conf)>unlabeled and unlabeled!=0:
+                    if unlabeled_save:
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         with open("{source}/labels/unlabeled/".format(source=source.split("/images")[0])+save_path[:save_path.rfind('.')].split('/')[-1] + '.txt', 'a') as file:
                             file.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
                         with open("{source}/unlabeled".format(source=source.split("/images")[0]) + '.txt', 'a') as file:
                             file.write('./images/unlabeled/{name}'.format(name=save_path[:save_path.rfind('.')].split('/')[-1])+'.jpg'+'\n')  # label format
 
-                    if save_img or view_img:  # Add bbox to image
+                    if save_img or view_img and (unlabeled_save or unlabeled==0):  # Add bbox to image
                         label = '%s %.2f' % (names[int(cls)], conf)
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
+                        un_pass=True
 
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))
@@ -135,7 +140,7 @@ def detect(save_img=False):
                     raise StopIteration
 
             # Save results (image with detections)
-            if save_img:
+            if save_img and un_pass:
                 if dataset.mode == 'images':
                     cv2.imwrite(save_path, im0)
                 else:
@@ -150,7 +155,7 @@ def detect(save_img=False):
                         vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*opt.fourcc), fps, (w, h))
                     vid_writer.write(im0)
 
-    if save_txt or save_img or unlabeled:
+    if save_txt or save_img and un_pass:
         print('Results saved to %s' % os.getcwd() + os.sep + out)
         if platform == 'darwin':  # MacOS
             os.system('open ' + save_path)

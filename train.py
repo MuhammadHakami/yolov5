@@ -39,12 +39,12 @@ hyp = {'lr0': 0.01,  # initial learning rate (SGD=1E-2, Adam=1E-3)
        'iou_t': 0.20,  # iou training threshold
        'anchor_t': 4.0,  # anchor-multiple threshold
        'fl_gamma': 0.0,  # focal loss gamma (efficientDet default is gamma=1.5)
-       'hsv_h': 0.014,  # image HSV-Hue augmentation (fraction)
-       'hsv_s': 0.68,  # image HSV-Saturation augmentation (fraction)
-       'hsv_v': 0.36,  # image HSV-Value augmentation (fraction)
-       'degrees': 0.0,  # image rotation (+/- deg)
+       'hsv_h': 0.3,  # image HSV-Hue augmentation (fraction)
+       'hsv_s': 0.7,  # image HSV-Saturation augmentation (fraction)
+       'hsv_v': 0.4,  # image HSV-Value augmentation (fraction)
+       'degrees': 15.0,  # image rotation (+/- deg)
        'translate': 0.0,  # image translation (+/- fraction)
-       'scale': 0.5,  # image scale (+/- gain)
+       'scale': 0.0,  # image scale (+/- gain)
        'shear': 0.0}  # image shear (+/- deg)
 print(hyp)
 
@@ -192,10 +192,10 @@ def train(hyp):
         unlabeled_path = data_dict['unlabeled']
         unlabeled_dataset = LoadImagesAndLabels(unlabeled_path, imgsz, batch_size,
                                     augment=True,
-                                    cutouts=1,
-                                    heavy_colors=[0.5, 0.0, 0.3],
+                                    # cutouts=0.9,
+                                    heavy_colors=[0.2, 0.1, 0.2],
                                     hyp=hyp,  # augmentation hyperparameters
-                                    rotation=30.0,
+                                    rotation=10.0,
                                     rect=opt.rect,  # rectangular training
                                     cache_images=opt.cache_images,
                                     single_cls=opt.single_cls)
@@ -349,7 +349,7 @@ def train(hyp):
 
                 # end batch ------------------------------------------------------------------------------------------------
         if opt.unlabeled:
-            batch_size= labeled_batch_size+unlabeled_batch_size
+            batch_size = labeled_batch_size+unlabeled_batch_size
             
         # Scheduler
         scheduler.step()
