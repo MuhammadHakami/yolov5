@@ -6,6 +6,7 @@ from utils.datasets import *
 from utils.utils import *
 import os
 import glob
+import time
 
 def clean_unlabeled(s):
     for filePath in glob.glob('{source}/labels/unlabeled/*.txt'.format(source=s.split("/images")[0])):
@@ -56,6 +57,7 @@ def detect(save_img=False):
         view_img = True
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz)
+
     else:
         save_img = True
         dataset = LoadImages(source, img_size=imgsz)
@@ -95,7 +97,7 @@ def detect(save_img=False):
                 p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
             else:
                 p, s, im0 = path, '', im0s
-
+            save_streamed=False
             save_path = str(Path(out) / Path(p).name)
             s += '%gx%g ' % img.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  #  normalization gain whwh
@@ -109,6 +111,8 @@ def detect(save_img=False):
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += '%g %ss, ' % (n, names[int(c)])  # add to string
 
+
+                
                 # Write results
                 for *xyxy, conf, cls in det:
                     un_pass=False if unlabeled!=0 else True
@@ -125,10 +129,12 @@ def detect(save_img=False):
                         with open("{source}/unlabeled".format(source=source.split("/images")[0]) + '.txt', 'a') as file:
                             file.write('./images/unlabeled/{name}'.format(name=save_path[:save_path.rfind('.')].split('/')[-1])+'.jpg'+'\n')  # label format
 
-                    if save_img or view_img and (unlabeled_save or unlabeled==0):  # Add bbox to image
+                    if webcam or save_img or view_img and (unlabeled_save or unlabeled==0):  # Add bbox to image
                         label = '%s %.2f' % (names[int(cls)], conf)
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
                         un_pass=True
+                        save_streamed = save_streamed or float(conf)>opt.conf_thres
+                        
 
             # Print time (inference + NMS)
             print('%sDone. (%.3fs)' % (s, t2 - t1))
@@ -140,6 +146,10 @@ def detect(save_img=False):
                     raise StopIteration
 
             # Save results (image with detections)
+            if webcam and save_streamed:
+                now = str(time.time())
+                cv2.imwrite(save_path.replace("0", now)+'.jpg', im0)
+
             if save_img and un_pass:
                 if dataset.mode == 'images':
                     cv2.imwrite(save_path, im0)
